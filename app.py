@@ -1,93 +1,64 @@
-import os
-import json
-import pandas as pd
 import streamlit as st
 from PIL import Image
+import torchvision.transforms as T
+import torch
+import torchvision.models as models
+from torchvision.models.detection import MaskRCNN_ResNet50_FPN_Weights
+import matplotlib.pyplot as plt
+import numpy as np
+import os
 
-# Define your directories
-INPUT_DIR = "input_images"
-SEGMENTED_DIR = "segmented_objects"
+# Define the function to visualize predictions
+def visualize_predictions(image, predictions, threshold=0.5):
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image)
+    for i, mask in enumerate(predictions[0]['masks']):
+        if predictions[0]['scores'][i] > threshold:
+            mask = mask[0].mul(255).byte().cpu().numpy()
+            plt.imshow(mask, alpha=0.5)
+    plt.axis('off')
+    st.pyplot(plt)
 
-# Ensure directories exist
-os.makedirs(INPUT_DIR, exist_ok=True)
-os.makedirs(SEGMENTED_DIR, exist_ok=True)
+# Define the function to save segmented objects
+def save_segmented_objects(image, predictions, output_dir="segmented_objects", threshold=0.5):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-# Dummy functions for the example
-# You should replace these with your actual implementations
-
-def segment_image(image_path):
-    # Placeholder function for image segmentation
-    return []
-
-def save_segmented_objects(image, predictions, output_dir=SEGMENTED_DIR, threshold=0.5):
-    # Placeholder function for saving segmented objects
-    pass
-
-def describe_objects(output_dir=SEGMENTED_DIR):
-    # Placeholder function for describing objects
-    return {}
-
-def extract_text_from_objects(output_dir=SEGMENTED_DIR):
-    # Placeholder function for extracting text from objects
-    return {}
-
-def summarize_object_attributes(object_texts):
-    # Placeholder function for summarizing object attributes
-    return {}
-
-def create_data_mapping(object_descriptions, object_texts, object_summaries, output_dir=SEGMENTED_DIR):
-    data_mapping = {}
-    try:
-        for filename in os.listdir(output_dir):
-            if filename.endswith(".jpg"):
-                object_id = filename.split(".")[0]
-                data_mapping[object_id] = {
-                    "description": object_descriptions.get(filename, ""),
-                    "text": object_texts.get(filename, ""),
-                    "summary": object_summaries.get(filename, "")
-                }
-        with open("data_mapping.json", "w") as f:
-            json.dump(data_mapping, f, indent=4)
-    except FileNotFoundError as e:
-        st.error(f"Error: Directory not found: {e}")
-    except Exception as e:
-        st.error(f"An unexpected error occurred: {e}")
-
-def generate_final_output(image, data_mapping):
-    # Placeholder function for generating final output
-    pass
+    for i, mask in enumerate(predictions[0]['masks']):
+        if predictions[0]['scores'][i] > threshold:
+            mask = mask[0].mul(255).byte().cpu().numpy()
+            masked_image = np.array(image) * mask[:, :, np.newaxis]
+            object_image = Image.fromarray(masked_image.astype(np.uint8))
+            object_image.save(os.path.join(output_dir, f"object_{i}.png"))
+            st.write(f"Saved object_{i}.png")
 
 # Streamlit application
-def main():
-    st.title('AI Pipeline for Image Segmentation and Object Analysis')
+st.title("Image Segmentation with Mask R-CNN")
 
-    uploaded_file = st.file_uploader("Cat.jpg", type="jpg")
-    if uploaded_file is not None:
-        image_path = os.path.join(INPUT_DIR, uploaded_file.name)
-        with open(image_path, 'wb') as f:
-            f.write(uploaded_file.getbuffer())
-        st.image(image_path, caption='Uploaded Image.', use_column_width=True)
+# Upload image
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption='Uploaded Image.', use_column_width=True)
+    st.write("")
+    st.write("Classifying...")
 
-        if st.button('Process'):
-            st.write("Processing...")
-            predictions = segment_image(image_path)
-            if predictions:
-                save_segmented_objects(Image.open(image_path), predictions)
+    # Transform the image
+    transform = T.Compose([T.ToTensor()])
+    image_tensor = transform(image)
 
-                object_descriptions = describe_objects()
-                object_texts = extract_text_from_objects()
-                object_summaries = summarize_object_attributes(object_texts)
-                create_data_mapping(object_descriptions, object_texts, object_summaries)
+    # Load the model
+    model = models.detection.maskrcnn_resnet50_fpn(weights=MaskRCNN_ResNet50_FPN_Weights.COCO_V1)
+    model.eval()
 
-                try:
-                    with open("data_mapping.json") as f:
-                        data_mapping = json.load(f)
+    # Check if GPU is available and use it if possible
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
-                    st.write(data_mapping)
-                    st.write(pd.DataFrame(list(data_mapping.values())))
+    # Predict
+    with torch.no_grad():
+        predictions = model([image_tensor.to(device)])
 
-                    generate_final_output(Image.open(image_path), data_mapping)
-                except FileNotFoundError as e:
-                    st.error(f"Error: Data mapping file not found: {e}")
-                except Exception as e:
-                    st.error(f"An unexpected error occurred: {e}")
+    # Visualize and save segmented objects
+    visualize_predictions(image, predictions)
+    save_segmented_objects(image, predictions)
